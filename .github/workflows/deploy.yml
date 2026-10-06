@@ -94,3 +94,34 @@ jobs:
           git add -A
           git commit -m "Deploy: Fresh static export to gh-pages [skip ci]"
           git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git gh-pages
+
+      - name: Ensure GitHub Pages is enabled and build triggered
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Checking GitHub Pages status via API..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/pages)
+          
+          if [ "$STATUS" = "404" ]; then
+            echo "Pages was disabled because branch was deleted. Enabling Pages pointing to gh-pages..."
+            curl -s -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/pages \
+              -d '{"source":{"branch":"gh-pages","path":"/"}}'
+          else
+            echo "Pages is already configured (Status: $STATUS). Updating source configuration..."
+            curl -s -X PUT \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/pages \
+              -d '{"source":{"branch":"gh-pages","path":"/"}}'
+          fi
+          
+          echo "Requesting immediate Pages build..."
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/pages/builds || true
