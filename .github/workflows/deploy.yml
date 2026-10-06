@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  undeploy-and-delete-branch:
-    name: 1. Undeploy and Delete Branch
+  undeploy-and-clean:
+    name: 1. Undeploy and Clean Branch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,7 +26,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Querying existing deployments for github-pages..."
+          echo "Deactivating existing github-pages deployments..."
           DEPLOYMENTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/deployments?environment=github-pages")
@@ -40,23 +40,11 @@ jobs:
                 "https://api.github.com/repos/${{ github.repository }}/deployments/$dep_id/statuses"
             fi
           done
-          echo "Deployment deactivation complete."
+          echo "Previous deployments deactivated."
 
-      - name: Delete remote gh-pages branch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git ls-remote --heads origin gh-pages | grep -q 'refs/heads/gh-pages'; then
-            echo "gh-pages branch found. Deleting from origin..."
-            git push origin --delete gh-pages
-            echo "Remote gh-pages branch deleted."
-          else
-            echo "gh-pages branch does not exist on remote. Nothing to delete."
-          fi
-
-  deploy-and-create-branch:
-    name: 2. Deploy and create branch
-    needs: undeploy-and-delete-branch
+  deploy-and-rebuild:
+    name: 2. Deploy and Rebuild gh-pages
+    needs: undeploy-and-clean
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -84,7 +72,7 @@ jobs:
       - name: Ensure .nojekyll exists
         run: touch ./out/.nojekyll
 
-      - name: Deploy and create gh-pages branch
+      - name: Deploy fresh static export to gh-pages branch
         run: |
           cd out
           git init
@@ -94,34 +82,3 @@ jobs:
           git add -A
           git commit -m "Deploy: Fresh static export to gh-pages [skip ci]"
           git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git gh-pages
-
-      - name: Ensure GitHub Pages is enabled and build triggered
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Checking GitHub Pages status via API..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/pages)
-          
-          if [ "$STATUS" = "404" ]; then
-            echo "Pages was disabled because branch was deleted. Enabling Pages pointing to gh-pages..."
-            curl -s -X POST \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/${{ github.repository }}/pages \
-              -d '{"source":{"branch":"gh-pages","path":"/"}}'
-          else
-            echo "Pages is already configured (Status: $STATUS). Updating source configuration..."
-            curl -s -X PUT \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/${{ github.repository }}/pages \
-              -d '{"source":{"branch":"gh-pages","path":"/"}}'
-          fi
-          
-          echo "Requesting immediate Pages build..."
-          curl -s -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/pages/builds || true
