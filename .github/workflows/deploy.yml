@@ -1,4 +1,4 @@
-name: Deploy Next.js to GitHub Pages
+name: Deploy Avisoft to GitHub Pages
 
 on:
   push:
@@ -6,67 +6,91 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
-  id-token: write
+  deployments: write
 
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  build:
+  undeploy-and-delete-branch:
+    name: 1. Undeploy and Delete Branch
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Detect package manager
-        id: detect-package-manager
+      - name: Deactivate active GitHub Pages deployments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f "${{ github.workspace }}/package-lock.json" ]; then
-            echo "manager=npm" >> $GITHUB_OUTPUT
-            echo "command=ci" >> $GITHUB_OUTPUT
-            echo "runner=npx --no-install" >> $GITHUB_OUTPUT
-            exit 0
+          echo "Querying existing deployments for github-pages..."
+          DEPLOYMENTS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/deployments?environment=github-pages")
+          
+          echo "$DEPLOYMENTS" | jq -r '.[].id' 2>/dev/null | while read -r dep_id; do
+            if [ -n "$dep_id" ] && [ "$dep_id" != "null" ]; then
+              echo "Deactivating deployment: $dep_id"
+              curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -d '{"state": "inactive"}' \
+                "https://api.github.com/repos/${{ github.repository }}/deployments/$dep_id/statuses"
+            fi
+          done
+          echo "Deployment deactivation complete."
+
+      - name: Delete remote gh-pages branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --heads origin gh-pages | grep -q 'refs/heads/gh-pages'; then
+            echo "gh-pages branch found. Deleting from origin..."
+            git push origin --delete gh-pages
+            echo "Remote gh-pages branch deleted."
           else
-            echo "manager=npm" >> $GITHUB_OUTPUT
-            echo "command=install" >> $GITHUB_OUTPUT
-            echo "runner=npx --no-install" >> $GITHUB_OUTPUT
-            exit 0
+            echo "gh-pages branch does not exist on remote. Nothing to delete."
           fi
 
-      - name: Setup Node
+  deploy-and-create-branch:
+    name: 2. Deploy and create branch
+    needs: undeploy-and-delete-branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: ${{ steps.detect-package-manager.outputs.manager }}
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-        with:
-          static_site_generator: next
+          cache: "npm"
 
       - name: Install dependencies
-        run: ${{ steps.detect-package-manager.outputs.manager }} ${{ steps.detect-package-manager.outputs.command }}
+        run: |
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      - name: Build with Next.js
-        run: ${{ steps.detect-package-manager.outputs.runner }} next build
+      - name: Build Next.js Static Export
+        run: npm run build
         env:
           NEXT_PUBLIC_BASE_PATH: /avisoft-website-trial
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./out
+      - name: Ensure .nojekyll exists
+        run: touch ./out/.nojekyll
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy and create gh-pages branch
+        run: |
+          cd out
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B gh-pages
+          git add -A
+          git commit -m "Deploy: Fresh static export to gh-pages [skip ci]"
+          git push -f https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git gh-pages
